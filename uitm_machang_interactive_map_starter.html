@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UiTM Machang Interactive Map</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --green:#14532d; --mint:#dcfce7; --ink:#17211b; --muted:#647067; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,sans-serif; color:var(--ink); background:#f5f7f5; }
+  header { background:var(--green); color:white; padding:16px; }
+  header h1 { margin:0 0 4px; font-size:1.25rem; }
+  header p { margin:0; font-size:.9rem; opacity:.9; }
+  main { max-width:1000px; margin:auto; padding:12px; }
+  .panel { background:white; border-radius:14px; padding:12px; box-shadow:0 2px 10px #0000000d; margin-bottom:10px; }
+  .controls { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  label { display:block; font-size:.85rem; font-weight:650; margin-bottom:5px; }
+  select,button { width:100%; min-height:42px; padding:9px 10px; border:1px solid #cbd5ce; border-radius:9px; background:white; font:inherit; }
+  button.primary { background:var(--green); color:white; border-color:var(--green); font-weight:650; }
+  button.secondary { background:var(--mint); border-color:#bbf7d0; color:#14532d; }
+  .actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; }
+  #map { height:62vh; min-height:380px; border-radius:14px; overflow:hidden; border:1px solid #d7ded8; }
+  #status { font-size:.9rem; line-height:1.45; color:#36443a; }
+  .note { font-size:.8rem; line-height:1.45; color:var(--muted); }
+  .leaflet-popup-content { line-height:1.5; }
+  @media(max-width:540px) { .controls { grid-template-columns:1fr; } #map { height:58vh; min-height:340px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>UiTM Machang Map</h1>
+  <p>One map · Choose a building · Show a route</p>
+</header>
+<main>
+  <section class="panel">
+    <div class="controls">
+      <div>
+        <label for="destination">Destination</label>
+        <select id="destination">
+          <option value="">Choose a building…</option>
+        </select>
+      </div>
+      <div>
+        <label for="travelMode">Travel mode</label>
+        <select id="travelMode">
+          <option value="walk">Walking</option>
+          <option value="drive">Car / motorcycle (road routing)</option>
+        </select>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="useLocation" class="primary">Use my current location</button>
+      <button id="chooseStart" class="secondary">Choose start point on map</button>
+    </div>
+    <p id="status" role="status" aria-live="polite">Choose a destination, then use your current location or tap “Choose start point on map”. You can also tap any place on the map to set it as the destination.</p>
+    <p class="note">Location pins below are starter examples and must be checked against the official campus map before public launch. Walking/driving routes depend on available mapped paths and the routing service; verify all routes on campus.</p>
+  </section>
+  <div id="map" aria-label="Interactive campus map"></div>
+  <p class="note">Map data © OpenStreetMap contributors. This demo uses public routing endpoints for testing; they may have usage limits and are not a guaranteed production service.</p>
+</main>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(() => {
+  // IMPORTANT: replace these sample coordinates with verified building entrance coordinates.
+  // Format: [latitude, longitude]
+  const places = [
+    { id:"hea", name:"Hal Ehwal Akademik (HEA) — verify pin", lat:5.75791, lon:102.27479 },
+    { id:"student-centre", name:"Pusat Pelajar / Student Center — verify pin", lat:5.75685, lon:102.27616 },
+    { id:"sample-hall", name:"Add another building (edit this sample)", lat:5.75868, lon:102.27467 }
+  ];
+
+  const map = L.map("map").setView([5.7578, 102.2752], 17);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 20,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+  }).addTo(map);
+
+  const destinationSelect = document.getElementById("destination");
+  const status = document.getElementById("status");
+  const modeSelect = document.getElementById("travelMode");
+  let start = null;
+  let startMarker = null;
+  let destinationMarker = null;
+  let routeLayer = null;
+  let choosingStart = false;
+
+  places.forEach(p => {
+    const option = document.createElement("option");
+    option.value = p.id;
+    option.textContent = p.name;
+    destinationSelect.appendChild(option);
+    const marker = L.marker([p.lat, p.lon]).addTo(map).bindPopup(
+      `<strong>${escapeHtml(p.name)}</strong><br><button type="button" onclick="window.pickDestination('${p.id}')">Route here</button>`
+    );
+    p.marker = marker;
+    marker.on("click", () => {
+      destinationSelect.value = p.id;
+      setDestination(p);
+    });
+  });
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function clearRoute() {
+    if (routeLayer) { map.removeLayer(routeLayer); routeLayer = null; }
+  }
+
+  function setStart(latlng, label) {
+    start = { lat:latlng.lat, lon:latlng.lng };
+    if (startMarker) map.removeLayer(startMarker);
+    startMarker = L.marker(latlng).addTo(map).bindPopup("Start: " + label);
+    startMarker.openPopup();
+    choosingStart = false;
+    document.getElementById("chooseStart").textContent = "Choose start point on map";
+    status.textContent = "Start point set. Choose a destination to calculate the route.";
+    const dest = places.find(p => p.id === destinationSelect.value);
+    if (dest) calculateRoute(dest);
+  }
+
+  function setDestination(place) {
+    destinationSelect.value = place.id;
+    if (destinationMarker) map.removeLayer(destinationMarker);
+    destinationMarker = L.marker([place.lat, place.lon], {
+      icon: L.divIcon({ className:"", html:'<div style="background:#14532d;color:white;border:2px solid white;border-radius:50% 50% 50% 0;width:25px;height:25px;transform:rotate(-45deg);display:grid;place-items:center;box-shadow:0 1px 5px #0005"><span style="transform:rotate(45deg);font-size:13px">★</span></div>', iconSize:[25,25], iconAnchor:[12,25] })
+    }).addTo(map).bindPopup("Destination: " + place.name).openPopup();
+    if (start) calculateRoute(place);
+    else status.textContent = "Destination selected. Now use your current location or choose a start point on the map.";
+  }
+
+  async function calculateRoute(place) {
+    if (!start) {
+      status.textContent = "Please set a start point first.";
+      return;
+    }
+    clearRoute();
+    status.textContent = "Calculating route…";
+    const mode = modeSelect.value;
+    // These public demo endpoints may change or impose limits.
+    // Foot endpoint for walking; car endpoint for driving/motorcycle road routing.
+    const base = mode === "walk"
+      ? "https://routing.openstreetmap.de/routed-foot/route/v1/driving/"
+      : "https://routing.openstreetmap.de/routed-car/route/v1/driving/";
+    const coords = `${start.lon},${start.lat};${place.lon},${place.lat}`;
+    const url = `${base}${coords}?overview=full&geometries=geojson&steps=true`;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error("Routing service returned " + response.status);
+      const data = await response.json();
+      if (!data.routes || !data.routes.length) throw new Error("No route found");
+      const route = data.routes[0];
+      routeLayer = L.geoJSON(route.geometry, {
+        style: { color:"#16803d", weight:6, opacity:.9 }
+      }).addTo(map);
+      map.fitBounds(routeLayer.getBounds(), { padding:[28,28] });
+      const km = (route.distance / 1000).toFixed(2);
+      const mins = Math.round(route.duration / 60);
+      status.textContent = `Route shown: ${km} km · estimated ${mins} min. Please verify the route and campus access on site.`;
+    } catch (err) {
+      status.textContent = "Could not calculate a route. The public routing service may be unavailable, or the mapped roads may not support this route. Try another start point or mode. Details: " + err.message;
+    }
+  }
+
+  destinationSelect.addEventListener("change", () => {
+    const p = places.find(p => p.id === destinationSelect.value);
+    if (p) setDestination(p);
+  });
+  modeSelect.addEventListener("change", () => {
+    const p = places.find(p => p.id === destinationSelect.value);
+    if (p && start) calculateRoute(p);
+  });
+  document.getElementById("useLocation").addEventListener("click", () => {
+    if (!navigator.geolocation) {
+      status.textContent = "This browser does not support location. Choose a start point on the map instead.";
+      return;
+    }
+    status.textContent = "Requesting location permission…";
+    navigator.geolocation.getCurrentPosition(
+      pos => setStart({ lat:pos.coords.latitude, lng:pos.coords.longitude }, "your current location"),
+      err => {
+        status.textContent = "Could not access location (" + err.message + "). Allow location permission or choose a start point on the map.";
+      },
+      { enableHighAccuracy:true, timeout:12000, maximumAge:30000 }
+    );
+  });
+  document.getElementById("chooseStart").addEventListener("click", () => {
+    choosingStart = !choosingStart;
+    document.getElementById("chooseStart").textContent = choosingStart ? "Tap map to set start…" : "Choose start point on map";
+    status.textContent = choosingStart ? "Tap the map where your journey starts." : "Start-point selection cancelled.";
+  });
+  map.on("click", e => {
+    if (choosingStart) {
+      setStart(e.latlng, "selected point");
+    } else {
+      // Clicking the map chooses a destination at that coordinate.
+      const p = { id:"custom", name:"Selected map point", lat:e.latlng.lat, lon:e.latlng.lng };
+      if (!places.some(x => x.id === "custom")) places.push(p);
+      else Object.assign(places.find(x => x.id === "custom"), p);
+      let opt = [...destinationSelect.options].find(o => o.value === "custom");
+      if (!opt) { opt = document.createElement("option"); opt.value="custom"; opt.textContent="Selected map point"; destinationSelect.appendChild(opt); }
+      destinationSelect.value = "custom";
+      setDestination(p);
+    }
+  });
+
+  window.pickDestination = id => {
+    const p = places.find(x => x.id === id);
+    if (p) setDestination(p);
+  };
+})();
+</script>
+</body>
+</html>
